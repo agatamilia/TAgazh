@@ -65,7 +65,7 @@ static Future<String> getPlaceFromCoordinates(double latitude, double longitude)
       // place.street,
       place.subLocality,    // Kelurahan/Desa
       place.locality,       // Kecamatan
-      place.subAdministrativeArea, // Kabupaten
+      // place.subAdministrativeArea, // Kabupaten
     ].firstWhere(
       (name) => name != null && name!.isNotEmpty,
       orElse: () => 'Bogor'
