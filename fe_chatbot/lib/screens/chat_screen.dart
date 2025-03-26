@@ -214,14 +214,14 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildWelcomeScreen() {
+Widget _buildWelcomeScreen() {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 100,
-            height: 100,
+            width: 100,  // Changed from inline-size
+            height: 100, // Changed from block-size
             decoration: BoxDecoration(
               color: Colors.green[100],
               shape: BoxShape.circle,
@@ -233,12 +233,12 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 16),  // Changed from block-size
           Text(
             "Selamat datang di PeTaniku!",
             style: Theme.of(context).textTheme.headlineMedium,
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 8),  // Changed from block-size
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Text(
@@ -387,10 +387,8 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       child: Column(
         children: [
-          // Text input and buttons
           Row(
             children: [
-              // Voice input button
               FloatingActionButton(
                 onPressed: chatProvider.isLoading 
                     ? null 
@@ -406,9 +404,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   color: Colors.white,
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 8),  // Changed from inline-size
               
-              // Text input field
               Expanded(
                 child: TextField(
                   controller: _textController,
@@ -427,9 +424,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   onSubmitted: (text) => _handleSubmitted(context, text),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 8),  // Changed from inline-size
               
-              // Send button
               FloatingActionButton(
                 onPressed: chatProvider.isLoading 
                     ? null 
@@ -444,8 +440,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           
-          // Suggestion chips
-          const SizedBox(height: 12),
+          const SizedBox(height: 12),  // Changed from block-size
           SuggestionChips(
             onSuggestionSelected: _onSuggestionSelected,
           ),

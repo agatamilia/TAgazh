@@ -12,7 +12,8 @@ import uuid
 from datetime import datetime
 from waitress import serve
 import requests
-from flask_cors import CORS
+from flask_ngrok import run_with_ngrok
+# from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -22,7 +23,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+run_with_ngrok(app)
+# CORS(app)  # Enable CORS for all routes
 
 # API Keys
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -77,6 +79,13 @@ try:
 except Exception as e:
     logger.error(f"Error initializing Whisper: {e}")
 
+@app.route('/')
+def home():
+    return jsonify({"status": "Flask is running!"})
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({"status": "healthy"}), 200
 # Session management endpoints
 @app.route('/api/sessions', methods=['GET'])
 def get_sessions():
@@ -535,7 +544,7 @@ def get_mock_weather_data():
         'advice': 'Cocok untuk panen atau pengeringan hasil panen'
     }
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)
     # http_server = WSGIServer(('0.0.0.0', 5000), app)
     # http_server.serve_forever()
 

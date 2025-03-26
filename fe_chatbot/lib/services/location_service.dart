@@ -40,8 +40,8 @@ class LocationService {
   // Improved mock position
   static loc.LocationData getMockPosition() {
     return loc.LocationData.fromMap({
-      'latitude': -6.4926991,  // Bogor coordinates
-      'longitude': 106.8593585,
+      'latitude': -6.1944,  // Bogor coordinates
+      'longitude': 106.8249,
       'accuracy': 50.0,
       'altitude': 0.0,
       'speed': 0.0,
@@ -81,8 +81,8 @@ static Future<String> getPlaceFromCoordinates(double latitude, double longitude)
   static Future<Map<String, dynamic>> getCompleteLocation() async {
     final position = await getCurrentPosition() ?? getMockPosition();
     final placeName = await getPlaceFromCoordinates(
-      position.latitude ?? -6.4926991, 
-      position.longitude ?? 106.8593585
+      position.latitude ?? -6.243, 
+      position.longitude ?? 105.8593585
     );
 
     return {
