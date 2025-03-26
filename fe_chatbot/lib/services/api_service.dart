@@ -8,7 +8,7 @@ import '../models/chat_session.dart';
 class ApiService {
   static final Dio _dio = Dio(
     BaseOptions(
-      baseUrl: ApiConfig.baseUrl, // Use from config
+      baseUrl: ApiConfig.baseUrl,
       connectTimeout: ApiConfig.connectTimeout,
       receiveTimeout: ApiConfig.receiveTimeout,
       headers: {
@@ -19,144 +19,202 @@ class ApiService {
     ),
   );
 
-  // Add interceptors for logging
   ApiService() {
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
         print('API Request: ${options.method} ${options.uri}');
+        print('Headers: ${options.headers}');
+        print('Data: ${options.data}');
         return handler.next(options);
       },
-      onError: (DioException e, handler) {
-        print('API Error: ${e.requestOptions.uri} - ${e.message}');
+      onResponse: (response, handler) {
+        print('API Response: ${response.statusCode} ${response.requestOptions.uri}');
+        print('Response Data: ${response.data}');
+        return handler.next(response);
+      },
+      onError: (DioError e, handler) {
+        _logError('DioInterceptor', e);
         return handler.next(e);
       },
     ));
   }
 
+  Future<Response> _requestWithRetry(RequestOptions options, {int retries = 2}) async {
+    DioError? lastError;
+    
+    for (int i = 0; i < retries; i++) {
+      try {
+        final response = await _dio.fetch(options);
+        return response;
+      } on DioError catch (e) {
+        lastError = e;
+        if (i < retries - 1) {
+          await Future.delayed(const Duration(seconds: 1));
+        }
+      }
+    }
+    
+    throw lastError!;
+  }
+
   // Session management
   Future<List<ChatSession>> getSessions() async {
     try {
-      final response = await _dio.get(ApiConfig.sessionEndpoint);
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'GET',
+          path: ApiConfig.sessionEndpoint,
+        ),
+      );
       return (response.data as List)
           .map((json) => ChatSession.fromMap(json))
           .toList();
     } catch (e) {
       _logError('getSessions', e);
-      return [];
+      rethrow;
     }
   }
 
   Future<ChatSession> createSession(String name) async {
     try {
-      final response = await _dio.post(
-        ApiConfig.sessionEndpoint,
-        data: {'name': name},
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'POST',
+          path: ApiConfig.sessionEndpoint,
+          data: {'name': name},
+        ),
       );
       return ChatSession.fromMap(response.data);
     } catch (e) {
       _logError('createSession', e);
-      return ChatSession(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        name: name,
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-      );
+      rethrow;
     }
   }
 
   Future<void> updateSession(ChatSession session) async {
     try {
-      await _dio.put(
-        '${ApiConfig.sessionEndpoint}/${session.id}',
-        data: {'name': session.name},
+      await _requestWithRetry(
+        RequestOptions(
+          method: 'PUT',
+          path: '${ApiConfig.sessionEndpoint}/${session.id}',
+          data: {'name': session.name},
+        ),
       );
     } catch (e) {
       _logError('updateSession', e);
+      rethrow;
     }
   }
 
   Future<void> deleteSession(String sessionId) async {
     try {
-      await _dio.delete('${ApiConfig.sessionEndpoint}/$sessionId');
+      await _requestWithRetry(
+        RequestOptions(
+          method: 'DELETE',
+          path: '${ApiConfig.sessionEndpoint}/$sessionId',
+        ),
+      );
     } catch (e) {
       _logError('deleteSession', e);
+      rethrow;
     }
   }
 
   // Message management
   Future<List<ChatMessage>> getMessages(String sessionId) async {
     try {
-      final response = await _dio.get(
-        '${ApiConfig.sessionEndpoint}/$sessionId/messages',
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'GET',
+          path: '${ApiConfig.sessionEndpoint}/$sessionId/messages',
+        ),
       );
       return (response.data as List)
           .map((json) => ChatMessage.fromMap(json))
           .toList();
     } catch (e) {
       _logError('getMessages', e);
-      return [];
+      rethrow;
     }
   }
 
   Future<void> saveMessage(ChatMessage message, String sessionId) async {
     try {
-      await _dio.post(
-        '${ApiConfig.sessionEndpoint}/$sessionId/messages',
-        data: message.toApiMap(sessionId),
+      await _requestWithRetry(
+        RequestOptions(
+          method: 'POST',
+          path: '${ApiConfig.sessionEndpoint}/$sessionId/messages',
+          data: message.toApiMap(sessionId),
+        ),
       );
     } catch (e) {
       _logError('saveMessage', e);
+      rethrow;
     }
   }
 
   Future<void> deleteMessage(String sessionId, String messageId) async {
     try {
-      await _dio.delete(
-        '${ApiConfig.sessionEndpoint}/$sessionId/messages/$messageId',
+      await _requestWithRetry(
+        RequestOptions(
+          method: 'DELETE',
+          path: '${ApiConfig.sessionEndpoint}/$sessionId/messages/$messageId',
+        ),
       );
     } catch (e) {
       _logError('deleteMessage', e);
+      rethrow;
     }
   }
 
   Future<void> clearMessages(String sessionId) async {
     try {
-      await _dio.delete(
-        '${ApiConfig.sessionEndpoint}/$sessionId/messages',
+      await _requestWithRetry(
+        RequestOptions(
+          method: 'DELETE',
+          path: '${ApiConfig.sessionEndpoint}/$sessionId/messages',
+        ),
       );
     } catch (e) {
       _logError('clearMessages', e);
+      rethrow;
     }
   }
 
   // Weather service
   Future<WeatherData> getWeather(double latitude, double longitude) async {
     try {
-      final response = await _dio.get(
-        ApiConfig.weatherEndpoint,
-        queryParameters: {'lat': latitude, 'lon': longitude},
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'GET',
+          path: ApiConfig.weatherEndpoint,
+          queryParameters: {'lat': latitude, 'lon': longitude},
+        ),
       );
       return WeatherData.fromJson(response.data);
     } catch (e) {
       _logError('getWeather', e);
-      return _getMockWeatherData();
+      rethrow;
     }
   }
 
   // Chat service
   Future<Map<String, dynamic>> sendMessage(String message, String sessionId) async {
     try {
-      final response = await _dio.post(
-        ApiConfig.chatEndpoint,
-        data: {
-          'message': message,
-          'session_id': sessionId,
-        },
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'POST',
+          path: ApiConfig.chatEndpoint,
+          data: {
+            'message': message,
+            'session_id': sessionId,
+          },
+        ),
       );
       return response.data;
     } catch (e) {
       _logError('sendMessage', e);
-      return _getMockChatResponse();
+      rethrow;
     }
   }
 
@@ -171,14 +229,17 @@ class ApiService {
         'model': 'whisper-1',
       });
       
-      final response = await _dio.post(
-        ApiConfig.transcribeEndpoint,
-        data: formData,
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'POST',
+          path: ApiConfig.transcribeEndpoint,
+          data: formData,
+        ),
       );
       return response.data['transcription'] ?? '';
     } catch (e) {
       _logError('transcribeAudio', e);
-      return 'Maaf, saya tidak dapat mengenali suara Anda. Silakan coba lagi atau ketik pertanyaan Anda.';
+      rethrow;
     }
   }
 
@@ -192,51 +253,37 @@ class ApiService {
         ),
       });
       
-      final response = await _dio.post(
-        ApiConfig.uploadEndpoint,
-        data: formData,
+      final response = await _requestWithRetry(
+        RequestOptions(
+          method: 'POST',
+          path: ApiConfig.uploadEndpoint,
+          data: formData,
+        ),
       );
       return response.data;
     } catch (e) {
       _logError('uploadFile', e);
-      return _getMockFileResponse(file);
+      rethrow;
     }
   }
 
-  // Helper methods
   void _logError(String method, dynamic error) {
-    if (error is DioException) {
-      print('API Error in $method: ${error.type}');
-      print('Path: ${error.requestOptions.path}');
-      print('Status: ${error.response?.statusCode}');
-      print('Response: ${error.response?.data}');
+    if (error is DioError) {
+      print('''
+API Error in $method:
+- Type: ${error.type}
+- Path: ${error.requestOptions.path}
+- Status: ${error.response?.statusCode}
+- Message: ${error.message}
+- Response: ${error.response?.data}
+- StackTrace: ${error.stackTrace}
+''');
     } else {
-      print('Error in $method: $error');
+      print('''
+Error in $method:
+- Error: $error
+- StackTrace: ${error is Error ? error.stackTrace : ''}
+''');
     }
-  }
-
-  WeatherData _getMockWeatherData() {
-    return WeatherData(
-      temperature: 30.0,
-      condition: 'sunny',
-      description: 'Cerah',
-      location: 'Lokasi Anda',
-      advice: 'Cocok untuk panen atau pengeringan hasil panen',
-    );
-  }
-
-  Map<String, dynamic> _getMockChatResponse() {
-    return {
-      'response': 'Maaf, saya tidak dapat terhubung ke server saat ini. Silakan coba lagi nanti.',
-      'is_farming_related': true
-    };
-  }
-
-  Map<String, dynamic> _getMockFileResponse(File file) {
-    return {
-      'message': 'File uploaded successfully',
-      'filename': file.path.split('/').last,
-      'response': 'Maaf, saya tidak dapat menganalisis gambar ini saat ini. Silakan tambahkan deskripsi tentang gambar ini.'
-    };
   }
 }

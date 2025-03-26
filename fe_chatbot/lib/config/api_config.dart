@@ -71,16 +71,16 @@ class ApiConfig {
   static const bool isProduction = false; // Set to true in production
   
   // Ngrok configuration (only used when useNgrok is true)
-  static const String ngrokSubdomain = 'c357-2404-c0-2130-00-2295-a67c'; // Replace with your ngrok subdomain
-  static const String ngrokRegion = 'ap'; // Region code (us, eu, ap, au, sa, jp, in)
+  static const String ngrokSubdomain = '70a7-2404-c0-2130-00-2295-a67c'; // Replace with your ngrok subdomain
+  static const String ngrokRegion = 'in'; // Region code (us, eu, ap, au, sa, jp, in)
   
   // Production configuration (only used when isProduction is true)
   static const String productionBaseUrl = 'https://your-production-api.com';
   
   // Local development configuration
-  static const String localBaseUrl = 'http://localhost:8080';
-  static const String androidEmulatorBaseUrl = 'http://10.0.2.2:8080';
-  static const String physicalDeviceBaseUrl = 'http://192.168.125.92:8080'; // Replace with your local IP
+  static const String localBaseUrl = 'http://localhost:5000';
+  static const String androidEmulatorBaseUrl = 'http://10.0.2.2:5000';
+  static const String physicalDeviceBaseUrl = 'http://192.168.125.92:5000'; // Replace with your local IP
 
   static String get baseUrl {
     if (isProduction) {

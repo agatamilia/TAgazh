@@ -40,12 +40,8 @@ class ChatProvider with ChangeNotifier {
     if (_isInitialized) return;
     
     try {
-      // Initialize TTS service
       await _ttsService.initialize();
-      
-      // Initialize audio service
       await _initAudio();
-      
       _isInitialized = true;
     } catch (e) {
       print('Error initializing ChatProvider: $e');
@@ -53,50 +49,52 @@ class ChatProvider with ChangeNotifier {
   }
 
   Future<void> loadMessages(String sessionId) async {
-    if (_currentSessionId == sessionId && _messages.isNotEmpty) {
-      // Already loaded this session
-      return;
-    }
+    if (_currentSessionId == sessionId && _messages.isNotEmpty) return;
     
     _messages.clear();
     _currentSessionId = sessionId;
+    _isLoading = true;
+    notifyListeners();
     
     try {
-      _isLoading = true;
-      notifyListeners();
-      
       final savedMessages = await _apiService.getMessages(sessionId);
       
       if (savedMessages.isNotEmpty) {
         _messages.addAll(savedMessages);
       } else {
-        // Add welcome message if this is a new conversation
-        _addBotMessage(
-          "Selamat datang di PeTaniku! Saya siap membantu dengan pertanyaan seputar pertanian, perkebunan, dan peternakan. Apa yang ingin Anda tanyakan hari ini?",
-          sessionId,
-        );
+        _addWelcomeMessage(sessionId);
       }
-      
-      _isLoading = false;
-      notifyListeners();
     } catch (e) {
       print('Error loading messages: $e');
-      // Add welcome message if there was an error
-      _addBotMessage(
-        "Selamat datang di PeTaniku! Saya siap membantu dengan pertanyaan seputar pertanian, perkebunan, dan peternakan. Apa yang ingin Anda tanyakan hari ini?",
-        sessionId,
-      );
+      _addWelcomeMessage(sessionId);
       
+      if (_messages.isEmpty) {
+        _addConnectionErrorMessage();
+      }
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
+  void _addWelcomeMessage(String sessionId) {
+    _messages.add(ChatMessage(
+      content: "Selamat datang di PeTaniku! Saya siap membantu dengan pertanyaan seputar pertanian.",
+      role: MessageRole.assistant,
+    ));
+  }
+
+  void _addConnectionErrorMessage() {
+    _messages.add(ChatMessage(
+      content: "Saya tidak dapat terhubung ke server saat ini. Beberapa fitur mungkin terbatas. "
+               "Pesan Anda akan disimpan secara lokal dan akan disinkronkan ketika koneksi pulih.",
+      role: MessageRole.assistant, // Changed from system to assistant
+    ));
+  }
+
   Future<void> _initAudio() async {
     try {
-      print('Initializing audio service');
       await _audioService.initRecorder();
-      print('Audio service initialized successfully');
     } catch (e) {
       print('Error initializing audio: $e');
     }
@@ -104,19 +102,12 @@ class ChatProvider with ChangeNotifier {
 
   void toggleVoiceOutput() {
     _useVoiceOutput = !_useVoiceOutput;
-    print('Voice output ${_useVoiceOutput ? 'enabled' : 'disabled'}');
     notifyListeners();
   }
 
   Future<void> sendMessage(String text, String sessionId, SessionProvider sessionProvider) async {
     if (text.isEmpty && !hasImagePending) return;
     
-    print('Sending message: $text');
-    
-    // Check if this is the first message in the session
-    bool isFirstMessage = _messages.length <= 1; // Only welcome message
-    
-    // Add user message
     final userMessage = ChatMessage(
       content: text,
       role: MessageRole.user,
@@ -125,77 +116,72 @@ class ChatProvider with ChangeNotifier {
     _messages.add(userMessage);
     notifyListeners();
     
-    await _apiService.saveMessage(userMessage, sessionId);
-    
-    // If this is the first user message, update the session name
-    if (isFirstMessage) {
-      // Extract a name from the first question (up to 30 chars)
-      String sessionName = text.length > 30 ? text.substring(0, 30) + '...' : text;
-      await sessionProvider.updateSessionName(sessionId, sessionName);
+    try {
+      await _apiService.saveMessage(userMessage, sessionId);
+    } catch (e) {
+      print('Failed to save message: $e');
     }
     
-    // Update session timestamp
-    await sessionProvider.updateSessionTimestamp(sessionId);
+    if (_messages.length == 1) {
+      final sessionName = text.length > 30 ? '${text.substring(0, 30)}...' : text;
+      try {
+        await sessionProvider.updateSessionName(sessionId, sessionName);
+      } catch (e) {
+        print('Failed to update session name: $e');
+      }
+    }
     
-    // Clear pending image after sending
     _pendingImage = null;
-    
     _isLoading = true;
     notifyListeners();
     
     try {
-      // Get response from API
-      print('Calling backend API for response');
       final response = await _apiService.sendMessage(text, sessionId);
-      
-      final String responseText = response['response'];
-      final bool isFarmingRelated = response['is_farming_related'] ?? true;
-      
-      await _addBotMessage(responseText, sessionId);
-      
-      // If not farming related, offer to open DeepSeek AI
-      if (!isFarmingRelated) {
-        print('Question is not farming-related, offering to open DeepSeek AI');
-      }
+      await _addBotMessage(response['response'], sessionId);
     } catch (e) {
       print('Error sending message: $e');
-      await _addBotMessage("Maaf, terjadi kesalahan saat memproses pesan Anda. Silakan coba lagi.", sessionId);
+      await _addBotMessage(_getErrorMessage(e), sessionId);
     }
   }
 
+  String _getErrorMessage(dynamic error) {
+    return "Terjadi kesalahan tak terduga. Silakan coba lagi.";
+  }
+
   Future<void> _addBotMessage(String content, String sessionId) async {
-    print('Adding bot message: $content');
     final botMessage = ChatMessage(
       content: content,
       role: MessageRole.assistant,
     );
     _messages.add(botMessage);
     
-    // Save message to backend
-    await _apiService.saveMessage(botMessage, sessionId);
+    try {
+      await _apiService.saveMessage(botMessage, sessionId);
+    } catch (e) {
+      print('Failed to save bot message: $e');
+    }
     
     _isLoading = false;
     notifyListeners();
     
-    // Speak the response if voice output is enabled
     if (_useVoiceOutput) {
       _speakText(content);
     }
   }
 
   Future<void> _speakText(String text) async {
-    await _ttsService.speak(text);
+    try {
+      await _ttsService.speak(text);
+    } catch (e) {
+      print('Error speaking text: $e');
+    }
   }
 
   Future<void> startListening(BuildContext context) async {
     try {
-      // Check microphone permission
-      bool hasPermission = await PermissionService.hasMicrophonePermission();
+      final hasPermission = await PermissionService.hasMicrophonePermission();
       if (!hasPermission) {
-        print('Requesting microphone permission');
-        hasPermission = await PermissionService.requestMicrophonePermission();
-        if (!hasPermission) {
-          print('Microphone permission denied');
+        if (await PermissionService.requestMicrophonePermission() == false) {
           if (context.mounted) {
             await PermissionService.showPermissionDialog(context, 'Mikrofon');
           }
@@ -205,8 +191,6 @@ class ChatProvider with ChangeNotifier {
       
       _isListening = true;
       notifyListeners();
-      
-      print('Starting audio recording');
       await _audioService.startRecording();
     } catch (e) {
       print('Error starting recording: $e');
@@ -216,44 +200,30 @@ class ChatProvider with ChangeNotifier {
   }
 
   Future<void> stopListening(String sessionId, SessionProvider sessionProvider) async {
+    _isListening = false;
+    notifyListeners();
+    
     try {
-      _isListening = false;
+      final recordingPath = await _audioService.stopRecording();
+      if (recordingPath == null) return;
+      
+      final recordingFile = _audioService.getRecordingFile();
+      if (recordingFile == null) return;
+      
+      _isLoading = true;
       notifyListeners();
       
-      print('Stopping recording');
-      final recordingPath = await _audioService.stopRecording();
-      
-      if (recordingPath != null) {
-        final recordingFile = _audioService.getRecordingFile();
-        
-        if (recordingFile != null) {
-          _isLoading = true;
+      try {
+        final transcription = await _apiService.transcribeAudio(recordingFile);
+        if (transcription.isNotEmpty) {
+          await sendMessage(transcription, sessionId, sessionProvider);
+        } else {
+          _isLoading = false;
           notifyListeners();
-          
-          try {
-            // Transcribe the audio
-            print('Transcribing audio recording');
-            final transcription = await _apiService.transcribeAudio(recordingFile);
-            
-            print('Transcription result: $transcription');
-            
-            if (transcription.isNotEmpty && transcription != 'Maaf, saya tidak dapat mengenali suara Anda. Silakan coba lagi atau ketik pertanyaan Anda.') {
-              // Send the transcribed text directly to get a response
-              await sendMessage(transcription, sessionId, sessionProvider);
-            } else {
-              _isLoading = false;
-              notifyListeners();
-              
-              // Log error message instead of showing SnackBar
-              print('Tidak dapat mengenali suara. Silakan coba lagi.');
-            }
-          } catch (e) {
-            print('Error processing audio: $e');
-            await _addBotMessage("Maaf, terjadi kesalahan saat memproses rekaman suara Anda. Silakan coba lagi.", sessionId);
-            _isLoading = false;
-            notifyListeners();
-          }
         }
+      } catch (e) {
+        print('Error processing audio: $e');
+        await _addBotMessage("Gagal memproses rekaman suara. Silakan coba lagi.", sessionId);
       }
     } catch (e) {
       print('Error stopping recording: $e');
@@ -263,7 +233,6 @@ class ChatProvider with ChangeNotifier {
   }
 
   void cancelListening() {
-    print('Cancelling listening');
     _isListening = false;
     _audioService.stopRecording();
     notifyListeners();
@@ -271,47 +240,34 @@ class ChatProvider with ChangeNotifier {
 
   Future<void> pickImage(BuildContext context) async {
     try {
-      // Check storage permission
-      bool hasPermission = await PermissionService.hasStoragePermission();
-      if (!hasPermission) {
-        print('Requesting storage permission');
-        hasPermission = await PermissionService.requestStoragePermission();
-        if (!hasPermission) {
-          print('Storage permission denied');
-          if (context.mounted) {
-            await PermissionService.showPermissionDialog(context, 'Penyimpanan');
-          }
-          return;
+      final hasPermission = await PermissionService.hasStoragePermission();
+      if (!hasPermission && await PermissionService.requestStoragePermission() == false) {
+        if (context.mounted) {
+          await PermissionService.showPermissionDialog(context, 'Penyimpanan');
         }
+        return;
       }
       
-      // Pick image from gallery
-      final XFile? pickedFile = await _imagePicker.pickImage(
+      final pickedFile = await _imagePicker.pickImage(
         source: ImageSource.gallery,
         maxWidth: 1800,
         maxHeight: 1800,
       );
       
-      if (pickedFile == null) {
-        print('No image selected');
-        return;
-      }
+      if (pickedFile == null) return;
       
-      // Copy the image to app's documents directory for persistence
       final appDir = await getApplicationDocumentsDirectory();
       final fileName = path.basename(pickedFile.path);
       final savedImage = await File(pickedFile.path).copy('${appDir.path}/$fileName');
       
-      // Store the image as pending until the user sends a message
       _pendingImage = savedImage;
       
-      // Show a snackbar to inform the user
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Gambar telah dipilih. Silakan ketik pertanyaan Anda dan kirim.'),
             duration: Duration(seconds: 3),
-          ),
+          )
         );
       }
       
@@ -320,9 +276,9 @@ class ChatProvider with ChangeNotifier {
       print('Error picking image: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Gagal memilih gambar: $e'),
-            duration: const Duration(seconds: 3),
+          const SnackBar(
+            content: Text('Gagal memilih gambar. Silakan coba lagi.'),
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -330,34 +286,25 @@ class ChatProvider with ChangeNotifier {
   }
 
   Future<void> deleteMessage(String messageId, String sessionId) async {
-    // Remove from local list
     _messages.removeWhere((message) => message.id == messageId);
-    
-    // Remove from backend
-    await _apiService.deleteMessage(sessionId, messageId);
-    
     notifyListeners();
-  }
-
-  Future<void> openDeepSeekAI() async {
-    const url = 'https://deepseek.ai';
-    if (await canLaunch(url)) {
-      await launch(url);
-    } else {
-      print('Could not launch $url');
+    
+    try {
+      await _apiService.deleteMessage(sessionId, messageId);
+    } catch (e) {
+      print('Failed to delete message: $e');
+      _messages.add(ChatMessage(
+        content: 'Gagal menghapus pesan dari server. Pesan hanya dihapus secara lokal.',
+        role: MessageRole.assistant, // Changed from system to assistant
+      ));
+      notifyListeners();
     }
-  }
-
-  Future<bool> isSpeaking() async {
-    return await _ttsService.isSpeaking();
   }
 
   @override
   void dispose() {
-    print('Disposing ChatProvider');
     _audioService.dispose();
     _ttsService.dispose();
     super.dispose();
   }
 }
-

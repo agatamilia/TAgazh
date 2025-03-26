@@ -13,7 +13,7 @@ from datetime import datetime
 from waitress import serve
 import requests
 from flask_ngrok import run_with_ngrok
-# from flask_cors import CORS
+from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config['DEBUG'] = True
 run_with_ngrok(app)
 # CORS(app)  # Enable CORS for all routes
 
@@ -354,7 +355,7 @@ def chat():
         payload = {
             "model": "deepseek-chat",
             "messages": [
-                {"role": "system", "content": "Anda adalah asisten pertanian yang membantu petani Indonesia. Berikan saran praktis tentang teknik bertani, cuaca, pengendalian hama, dan pengelolaan tanaman. Jawaban harus praktis, informatif, dan mudah dipahami dalam Bahasa Indonesia. Berikan jawaban yang lengkap dan detail."},
+                {"role": "system", "content": "Anda adalah asisten pertanian PeTaniku yang ahli dalam bidang pertanian, perkebunan, dan peternakan. Fokus utama Anda adalah memberikan informasi akurat seputar dunia pertanian. Untuk pertanyaan di luar bidang pertanian, Anda tetap bisa menjawab dengan singkat dan jelas, tetapi akan mengingatkan pengguna bahwa keahlian utama Anda adalah di bidang pertanian."},
                 {"role": "user", "content": message}
             ],
             "temperature": 0.7,
@@ -544,7 +545,8 @@ def get_mock_weather_data():
         'advice': 'Cocok untuk panen atau pengeringan hasil panen'
     }
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run()
+    # app.run(host='0.0.0.0', port=8080, debug=True)
     # http_server = WSGIServer(('0.0.0.0', 5000), app)
     # http_server.serve_forever()
 
