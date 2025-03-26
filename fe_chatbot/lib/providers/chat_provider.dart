@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -48,6 +50,20 @@ class ChatProvider with ChangeNotifier {
     }
   }
 
+  Future<void> _initAudio() async {
+    await _audioService.initRecorder();
+    await _audioService.initPlayer();
+  }
+
+  void _showErrorSnackbar(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
   Future<void> loadMessages(String sessionId) async {
     if (_currentSessionId == sessionId && _messages.isNotEmpty) return;
     
@@ -92,13 +108,6 @@ class ChatProvider with ChangeNotifier {
     ));
   }
 
-  Future<void> _initAudio() async {
-    try {
-      await _audioService.initRecorder();
-    } catch (e) {
-      print('Error initializing audio: $e');
-    }
-  }
 
   void toggleVoiceOutput() {
     _useVoiceOutput = !_useVoiceOutput;
@@ -177,56 +186,74 @@ class ChatProvider with ChangeNotifier {
     }
   }
 
+// In chat_provider.dart
   Future<void> startListening(BuildContext context) async {
     try {
-      final hasPermission = await PermissionService.hasMicrophonePermission();
-      if (!hasPermission) {
-        if (await PermissionService.requestMicrophonePermission() == false) {
-          if (context.mounted) {
-            await PermissionService.showPermissionDialog(context, 'Mikrofon');
-          }
+      // Check permissions
+      if (!await PermissionService.hasMicrophonePermission()) {
+        final granted = await PermissionService.requestMicrophonePermission();
+        if (!granted && context.mounted) {
+          await PermissionService.showPermissionDialog(context, 'Mikrofon');
           return;
         }
       }
+
+      // Initialize and start recording
+      await _audioService.initRecorder();
+      await _audioService.startRecording();
       
       _isListening = true;
       notifyListeners();
-      await _audioService.startRecording();
     } catch (e) {
-      print('Error starting recording: $e');
       _isListening = false;
       notifyListeners();
+      _showErrorSnackbar(context, 'Gagal memulai rekaman: ${e.toString()}');
     }
   }
 
   Future<void> stopListening(String sessionId, SessionProvider sessionProvider) async {
-    _isListening = false;
-    notifyListeners();
+    if (!_isListening) return;
     
+    _isListening = false;
+    _isLoading = true;
+    notifyListeners();
+
     try {
+      // Stop recording and get file
       final recordingPath = await _audioService.stopRecording();
-      if (recordingPath == null) return;
-      
-      final recordingFile = _audioService.getRecordingFile();
-      if (recordingFile == null) return;
-      
-      _isLoading = true;
-      notifyListeners();
-      
-      try {
-        final transcription = await _apiService.transcribeAudio(recordingFile);
-        if (transcription.isNotEmpty) {
-          await sendMessage(transcription, sessionId, sessionProvider);
-        } else {
-          _isLoading = false;
-          notifyListeners();
-        }
-      } catch (e) {
-        print('Error processing audio: $e');
-        await _addBotMessage("Gagal memproses rekaman suara. Silakan coba lagi.", sessionId);
+      if (recordingPath == null) {
+        throw Exception('No recording path available');
       }
+
+      final recordingFile = _audioService.getRecordingFile();
+      if (recordingFile == null || !await recordingFile.exists()) {
+        throw Exception('Recording file not found');
+      }
+
+      // Add temporary audio message
+      final audioMessage = ChatMessage(
+        id: 'audio_${DateTime.now().millisecondsSinceEpoch}',
+        content: 'Mengolah pesan suara...',
+        role: MessageRole.user,
+        isAudio: true,
+      );
+      _addMessage(sessionId, audioMessage);
+
+      // Send to Whisper
+      final transcription = await _apiService.transcribeAudio(recordingFile);
+      
+      // Update the message with transcription
+      final index = messages.indexWhere((m) => m.id == audioMessage.id);
+      if (index != -1) {
+        messages[index] = messages[index].copyWith(content: transcription);
+      }
+
+      // Send as normal message
+      await sendMessage(transcription, sessionId, sessionProvider);
     } catch (e) {
-      print('Error stopping recording: $e');
+      _addBotMessage("Gagal memproses rekaman suara: ${e.toString()}", sessionId);
+      print('Error in stopListening: $e');
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
@@ -238,6 +265,12 @@ class ChatProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  void _addMessage(String sessionId, ChatMessage message) {
+    messages.add(message);
+    notifyListeners();
+    // Optionally save to backend
+    _apiService.saveMessage(message, sessionId);
+  }
   Future<void> pickImage(BuildContext context) async {
     try {
       final hasPermission = await PermissionService.hasStoragePermission();

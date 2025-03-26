@@ -4,6 +4,7 @@ import '../config/api_config.dart';
 import '../models/weather_data.dart';
 import '../models/message.dart';
 import '../models/chat_session.dart';
+import 'package:http_parser/http_parser.dart';
 
 class ApiService {
   static final Dio _dio = Dio(
@@ -219,30 +220,26 @@ class ApiService {
   }
 
   // Audio transcription
-  Future<String> transcribeAudio(File audioFile) async {
+Future<String> transcribeAudio(File audioFile) async {
     try {
       final formData = FormData.fromMap({
         'audio': await MultipartFile.fromFile(
           audioFile.path,
-          filename: 'audio_${DateTime.now().millisecondsSinceEpoch}.wav',
+          filename: 'recording_${DateTime.now().millisecondsSinceEpoch}.wav',
+          contentType: MediaType('audio', 'wav'),  // Now properly recognized
         ),
-        'model': 'whisper-1',
       });
-      
-      final response = await _requestWithRetry(
-        RequestOptions(
-          method: 'POST',
-          path: ApiConfig.transcribeEndpoint,
-          data: formData,
-        ),
+
+      final response = await _dio.post(
+        '/api/transcribe',
+        data: formData,
       );
-      return response.data['transcription'] ?? '';
-    } catch (e) {
-      _logError('transcribeAudio', e);
-      rethrow;
+
+      return response.data['transcription'] as String;
+    } on DioException catch (e) {
+      throw Exception('Audio transcription failed: ${e.message}');
     }
   }
-
   // File upload
   Future<Map<String, dynamic>> uploadFile(File file) async {
     try {

@@ -420,6 +420,39 @@ def chat():
         logger.error(f"Chat API error: {e}")
         return jsonify({"error": "An error occurred while processing your message"}), 500
 
+# @app.route('/api/transcribe', methods=['POST'])
+# def transcribe_audio():
+#     try:
+#         if 'audio' not in request.files:
+#             return jsonify({"error": "No audio file provided"}), 400
+            
+#         audio_file = request.files['audio']
+        
+#         # Save the uploaded file to a temporary location
+#         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_audio:
+#             audio_file.save(temp_audio.name)
+#             temp_path = temp_audio.name
+        
+#         # Use Whisper to transcribe
+#         if whisper_model:
+#             result = whisper_api.transcribe(whisper_model, temp_path, language="id")
+#             transcription = result.get("text", "")
+            
+#             # Clean up the temporary file
+#             os.unlink(temp_path)
+            
+#             if not transcription:
+#                 return jsonify({"error": "Failed to transcribe audio", "details": result.get("error", "")}), 500
+                
+#             return jsonify({"transcription": transcription})
+#         else:
+#             return jsonify({"error": "Whisper model not available"}), 500
+            
+#     except Exception as e:
+#         logger.error(f"Transcription error: {e}")
+#         return jsonify({"error": "An error occurred during transcription"}), 500
+
+# In your Flask backend
 @app.route('/api/transcribe', methods=['POST'])
 def transcribe_audio():
     try:
@@ -428,30 +461,56 @@ def transcribe_audio():
             
         audio_file = request.files['audio']
         
-        # Save the uploaded file to a temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_audio:
+        # Validate file type
+        if not audio_file.filename.lower().endswith('.wav'):
+            return jsonify({"error": "Only WAV files are supported"}), 400
+        
+        # Create temporary file with proper extension
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
             audio_file.save(temp_audio.name)
             temp_path = temp_audio.name
         
-        # Use Whisper to transcribe
-        if whisper_model:
-            result = whisper_api.transcribe(whisper_model, temp_path, language="id")
-            transcription = result.get("text", "")
+        try:
+            # Validate audio file
+            if os.path.getsize(temp_path) == 0:
+                raise ValueError("Empty audio file")
+                
+            # Transcribe with Whisper
+            result = whisper_api.transcribe(
+                model=whisper_model,
+                audio=temp_path,
+                language="id",
+                temperature=0.2,  # More deterministic output
+                initial_prompt="Pertanian, tanaman, cuaca, hama",  # Better for your domain
+            )
             
-            # Clean up the temporary file
-            os.unlink(temp_path)
+            transcription = result.get("text", "").strip()
             
             if not transcription:
-                return jsonify({"error": "Failed to transcribe audio", "details": result.get("error", "")}), 500
+                return jsonify({
+                    "error": "Transcription returned empty",
+                    "details": str(result)
+                }), 500
                 
-            return jsonify({"transcription": transcription})
-        else:
-            return jsonify({"error": "Whisper model not available"}), 500
+            return jsonify({
+                "transcription": transcription,
+                "language": result.get("language", "id")
+            })
             
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+                
     except Exception as e:
-        logger.error(f"Transcription error: {e}")
-        return jsonify({"error": "An error occurred during transcription"}), 500
-
+        logger.error(f"Transcription error: {str(e)}", exc_info=True)
+        return jsonify({
+            "error": "Audio processing failed",
+            "details": str(e)
+        }), 500
+    
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     try:

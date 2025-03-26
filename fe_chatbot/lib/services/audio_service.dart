@@ -43,24 +43,39 @@ class AudioService {
   }
 
   // Start recording
-  Future<void> startRecording() async {
-    if (!_isRecorderInitialized) {
-      print('Initializing recorder before starting recording');
-      await initRecorder();
-    }
+  // Future<void> startRecording() async {
+  //   if (!_isRecorderInitialized) {
+  //     print('Initializing recorder before starting recording');
+  //     await initRecorder();
+  //   }
     
-    print('Getting temporary directory for recording');
-    Directory tempDir = await getTemporaryDirectory();
-    _recordingPath = '${tempDir.path}/recording.wav';
+  //   print('Getting temporary directory for recording');
+  //   Directory tempDir = await getTemporaryDirectory();
+  //   _recordingPath = '${tempDir.path}/recording.wav';
     
-    print('Starting recording to: $_recordingPath');
-    await _recorder.startRecorder(
-      toFile: _recordingPath,
-      codec: Codec.pcm16WAV,
-    );
-    print('Recording started');
+  //   print('Starting recording to: $_recordingPath');
+  //   await _recorder.startRecorder(
+  //     toFile: _recordingPath,
+  //     codec: Codec.pcm16WAV,
+  //   );
+  //   print('Recording started');
+  // }
+Future<void> startRecording() async {
+  if (!_isRecorderInitialized) {
+    await initRecorder();
   }
-
+  
+  Directory tempDir = await getTemporaryDirectory();
+  _recordingPath = '${tempDir.path}/recording_${DateTime.now().millisecondsSinceEpoch}.wav';
+  
+  await _recorder.startRecorder(
+    toFile: _recordingPath,
+    codec: Codec.pcm16WAV,
+    sampleRate: 16000, // Whisper prefers 16kHz sample rate
+    numChannels: 1, // Mono audio
+    bitRate: 256000, // Higher quality
+  );
+}
   // Stop recording
   Future<String?> stopRecording() async {
     if (_recorder.isRecording) {
