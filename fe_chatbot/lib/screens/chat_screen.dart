@@ -449,4 +449,3 @@ Widget _buildWelcomeScreen() {
     );
   }
 }
-

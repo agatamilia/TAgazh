@@ -1,19 +1,18 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 import requests
 import json
 import tempfile
 from dotenv import load_dotenv
-import whisper_api
+import whisper
 import logging
 import sqlite3
 import uuid
 from datetime import datetime
-from waitress import serve
-import requests
+from werkzeug.utils import secure_filename
+import subprocess
 from flask_ngrok import run_with_ngrok
-from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -23,9 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['DEBUG'] = True
 run_with_ngrok(app)
-# CORS(app)  # Enable CORS for all routes
 
 # API Keys
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -33,61 +30,156 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # Database setup
 DB_PATH = os.path.join(os.path.dirname(__file__), 'chatbot.db')
+UPLOAD_FOLDER = 'uploads/audio'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+MAX_AUDIO_DURATION = 30  # seconds
+MIN_AUDIO_DURATION = 0.5  # seconds
+
+# Whisper model initialization
+try:
+    WHISPER_MODEL = whisper.load_model("base")
+    logging.info("Whisper model loaded successfully")
+except Exception as e:
+    logging.error(f"Failed to load Whisper model: {e}")
+    WHISPER_MODEL = None
 
 def init_db():
-  """Initialize the SQLite database"""
-  conn = sqlite3.connect(DB_PATH)
-  cursor = conn.cursor()
-  
-  # Create sessions table
-  cursor.execute('''
-  CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-  )
-  ''')
-  
-  # Create messages table
-  cursor.execute('''
-  CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      content TEXT NOT NULL,
-      role TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      image_path TEXT,
-      FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
-  )
-  ''')
-  
-  conn.commit()
-  conn.close()
-  logger.info(f"Database initialized at {DB_PATH}")
+    """Initialize the SQLite database"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    ''')
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        role TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        image_path TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
-# Initialize database on startup
 init_db()
+@app.route('/info', methods=['POST'])
+def handle_info():
+    try:
+        # Ambil data form biasa
+        name = request.form.get('name')
+        date = request.form.get('date')
+        
+        # Ambil file tunggal
+        single_file = request.files.get('file')
+        if single_file:
+            single_filename = secure_filename(single_file.filename)
+            single_file.save(os.path.join(UPLOAD_FOLDER, single_filename))
+        
+        # Ambil multiple files
+        multiple_files = request.files.getlist('files[]')
+        saved_files = []
+        
+        for file in multiple_files:
+            if file.filename == '':
+                continue
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(UPLOAD_FOLDER, filename))
+            saved_files.append(filename)
+        
+        return jsonify({
+            'status': 'success',
+            'name': name,
+            'date': date,
+            'single_file': single_file.filename if single_file else None,
+            'multiple_files': saved_files
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in /info endpoint: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-# Load Whisper model
-whisper_model = None
-try:
-    whisper_model = whisper_api.load_model("base")
-    if whisper_model:
-        logger.info("Whisper model loaded successfully")
-    else:
-        logger.error("Failed to load Whisper model")
-except Exception as e:
-    logger.error(f"Error initializing Whisper: {e}")
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe_audio():
+    if 'audio' not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+
+    audio_file = request.files['audio']
+    if audio_file.filename == '':
+        return jsonify({"error": "Empty filename"}), 400
+
+    try:
+        # Save file directly (no temp files)
+        filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        audio_file.save(filepath)
+
+        # Validate audio
+        validation = validate_audio_file(filepath)
+        if validation.get('error'):
+            return jsonify(validation), 400
+
+        # Transcribe
+        result = WHISPER_MODEL.transcribe(
+            filepath,
+            language="id",
+            task="transcribe"
+        )
+        transcription = result.get("text", "").strip()
+        
+        if not transcription:
+            return jsonify({"error": "No speech detected"}), 400
+
+        # Get AI response
+        ai_response = get_deepseek_response(transcription)
+        
+        return jsonify({
+            "status": "success",
+            "transcription": transcription,
+            "ai_response": ai_response,
+            "audio_url": f"/uploads/audio/{filename}"
+        })
+
+    except Exception as e:
+        logging.error(f"Transcription error: {str(e)}")
+        return jsonify({"error": "Audio processing failed"}), 500
+
+def validate_audio_file(filepath):
+    """Validate audio file format and duration"""
+    try:
+        # Check duration
+        duration = float(subprocess.check_output([
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filepath
+        ]).decode('utf-8').strip())
+        
+        if duration < MIN_AUDIO_DURATION:
+            return {"error": f"Audio too short (min {MIN_AUDIO_DURATION}s)"}
+        if duration > MAX_AUDIO_DURATION:
+            return {"error": f"Audio too long (max {MAX_AUDIO_DURATION}s)"}
+            
+        return {"valid": True, "duration": duration}
+        
+    except Exception as e:
+        logging.error(f"Validation error: {str(e)}")
+        return {"error": "Invalid audio file"}
 
 @app.route('/')
 def home():
     return jsonify({"status": "Flask is running!"})
 
-@app.route('/api/health')
-def health_check():
-    return jsonify({"status": "healthy"}), 200
-# Session management endpoints
 @app.route('/api/sessions', methods=['GET'])
 def get_sessions():
     try:
@@ -346,7 +438,6 @@ def chat():
         if not message:
             return jsonify({"error": "Message is required"}), 400
         
-        # Call DeepSeek API without keyword filtering
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
             "Content-Type": "application/json"
@@ -355,11 +446,14 @@ def chat():
         payload = {
             "model": "deepseek-chat",
             "messages": [
-                {"role": "system", "content": "Anda adalah asisten pertanian PeTaniku yang ahli dalam bidang pertanian, perkebunan, dan peternakan. Fokus utama Anda adalah memberikan informasi akurat seputar dunia pertanian. Untuk pertanyaan di luar bidang pertanian, Anda tetap bisa menjawab dengan singkat dan jelas, tetapi akan mengingatkan pengguna bahwa keahlian utama Anda adalah di bidang pertanian."},
+                {"role": "system", "content": "Anda adalah asisten pertanian PeTaniku. Tolong format jawaban dengan:\n"
+                                            "1. Ganti **teks** dengan *teks* untuk bold\n"
+                                            "2. Hindari penggunaan markdown seperti ### untuk heading\n"
+                                            "3. Gunakan garis baru untuk pemisah bagian"},
                 {"role": "user", "content": message}
             ],
             "temperature": 0.7,
-            "max_tokens": 1000  # Increased from 500 to 1000 for more detailed responses
+            "max_tokens": 1000
         }
         
         response = requests.post(
@@ -373,7 +467,12 @@ def chat():
         if response.status_code == 200:
             assistant_message = result['choices'][0]['message']['content']
             
-            # If session_id is provided, save the messages to the database
+            # Remove markdown headings and ensure proper bold formatting
+            formatted_message = assistant_message.replace('###', '').replace('**', '*')
+            
+            # Create a clean version for TTS (without formatting markers)
+            clean_tts_message = formatted_message.replace('*', '')
+            
             if session_id:
                 try:
                     conn = sqlite3.connect(DB_PATH)
@@ -394,10 +493,9 @@ def chat():
                     
                     cursor.execute(
                         'INSERT INTO messages (id, session_id, content, role, timestamp) VALUES (?, ?, ?, ?, ?)',
-                        (assistant_message_id, session_id, assistant_message, 'assistant', current_time)
+                        (assistant_message_id, session_id, formatted_message, 'assistant', current_time)
                     )
                     
-                    # Update session's updated_at timestamp
                     cursor.execute(
                         'UPDATE sessions SET updated_at = ? WHERE id = ?',
                         (current_time, session_id)
@@ -409,8 +507,9 @@ def chat():
                     logger.error(f"Error saving messages to database: {e}")
             
             return jsonify({
-                "response": assistant_message,
-                "is_farming_related": True  # Always return true to avoid restrictions
+                "response": formatted_message,
+                "clean_tts_message": clean_tts_message,
+                "is_farming_related": True
             })
         else:
             logger.error(f"DeepSeek API error: {result}")
@@ -420,144 +519,72 @@ def chat():
         logger.error(f"Chat API error: {e}")
         return jsonify({"error": "An error occurred while processing your message"}), 500
 
-# @app.route('/api/transcribe', methods=['POST'])
-# def transcribe_audio():
-#     try:
-#         if 'audio' not in request.files:
-#             return jsonify({"error": "No audio file provided"}), 400
-            
-#         audio_file = request.files['audio']
-        
-#         # Save the uploaded file to a temporary location
-#         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_audio:
-#             audio_file.save(temp_audio.name)
-#             temp_path = temp_audio.name
-        
-#         # Use Whisper to transcribe
-#         if whisper_model:
-#             result = whisper_api.transcribe(whisper_model, temp_path, language="id")
-#             transcription = result.get("text", "")
-            
-#             # Clean up the temporary file
-#             os.unlink(temp_path)
-            
-#             if not transcription:
-#                 return jsonify({"error": "Failed to transcribe audio", "details": result.get("error", "")}), 500
-                
-#             return jsonify({"transcription": transcription})
-#         else:
-#             return jsonify({"error": "Whisper model not available"}), 500
-            
-#     except Exception as e:
-#         logger.error(f"Transcription error: {e}")
-#         return jsonify({"error": "An error occurred during transcription"}), 500
-
-# In your Flask backend
-@app.route('/api/transcribe', methods=['POST'])
-def transcribe_audio():
-    try:
-        if 'audio' not in request.files:
-            return jsonify({"error": "No audio file provided"}), 400
-            
-        audio_file = request.files['audio']
-        
-        # Validate file type
-        if not audio_file.filename.lower().endswith('.wav'):
-            return jsonify({"error": "Only WAV files are supported"}), 400
-        
-        # Create temporary file with proper extension
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-            audio_file.save(temp_audio.name)
-            temp_path = temp_audio.name
-        
-        try:
-            # Validate audio file
-            if os.path.getsize(temp_path) == 0:
-                raise ValueError("Empty audio file")
-                
-            # Transcribe with Whisper
-            result = whisper_api.transcribe(
-                model=whisper_model,
-                audio=temp_path,
-                language="id",
-                temperature=0.2,  # More deterministic output
-                initial_prompt="Pertanian, tanaman, cuaca, hama",  # Better for your domain
-            )
-            
-            transcription = result.get("text", "").strip()
-            
-            if not transcription:
-                return jsonify({
-                    "error": "Transcription returned empty",
-                    "details": str(result)
-                }), 500
-                
-            return jsonify({
-                "transcription": transcription,
-                "language": result.get("language", "id")
-            })
-            
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-                
-    except Exception as e:
-        logger.error(f"Transcription error: {str(e)}", exc_info=True)
-        return jsonify({
-            "error": "Audio processing failed",
-            "details": str(e)
-        }), 500
+# @app.route('/api/debug/audio', methods=['POST'])
+# def debug_audio():
+#     audio_file = request.files['audio']
+#     temp_path = "/tmp/debug_audio.wav"
+#     audio_file.save(temp_path)
     
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    try:
-        if 'file' not in request.files:
-            return jsonify({"error": "No file provided"}), 400
-            
-        uploaded_file = request.files['file']
-        
-        if uploaded_file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
-            
-        # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
-        if not os.path.exists(upload_dir):
-            os.makedirs(upload_dir)
-        
-        # Save the file with a unique name
-        file_ext = os.path.splitext(uploaded_file.filename)[1]
-        unique_filename = f"{uuid.uuid4()}{file_ext}"
-        file_path = os.path.join(upload_dir, unique_filename)
-        
-        uploaded_file.save(file_path)
-        
-        # Process the file based on its type
-        file_type = os.path.splitext(uploaded_file.filename)[1].lower()
-        
-        if file_type in ['.jpg', '.jpeg', '.png']:
-            # For image files, we'll return a generic response since DeepSeek doesn't have image analysis
-            response_text = f"Saya telah menerima gambar '{uploaded_file.filename}'. Silakan jelaskan apa yang ingin Anda ketahui tentang gambar ini, dan saya akan mencoba membantu berdasarkan deskripsi Anda."
-        elif file_type in ['.pdf', '.doc', '.docx', '.txt']:
-            # Process document file
-            response_text = f"Dokumen '{uploaded_file.filename}' telah diterima. Silakan jelaskan apa yang ingin Anda ketahui tentang dokumen ini."
-        else:
-            # Handle other file types
-            response_text = f"File '{uploaded_file.filename}' telah diterima. Silakan jelaskan apa yang ingin Anda ketahui tentang file ini."
-            
-        return jsonify({
-            "message": "File uploaded successfully",
-            "filename": uploaded_file.filename,
-            "file_path": file_path,
-            "response": response_text
-        })
-            
-    except Exception as e:
-        logger.error(f"File upload error: {e}")
-        return jsonify({"error": "An error occurred during file upload"}), 500
+#     return jsonify({
+#         "file_size": os.path.getsize(temp_path),
+#         "first_bytes": str(open(temp_path, 'rb').read(100))  # 100 byte pertama
+#     })
 
+# @app.route('/api/upload', methods=['POST'])
+# def upload_file():
+#     if 'file' not in request.files:
+#         return jsonify({"error": "No file provided"}), 400
+
+#     uploaded_file = request.files['file']
+#     if uploaded_file.filename == '':
+#         return jsonify({"error": "No file selected"}), 400
+
+#     try:
+#         # Generate unique filename
+#         file_ext = os.path.splitext(uploaded_file.filename)[1].lower()
+#         unique_filename = f"{uuid.uuid4()}{file_ext}"
+#         file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+#         uploaded_file.save(file_path)
+
+#         # Generate appropriate response based on file type
+#         if file_ext in ['.jpg', '.jpeg', '.png', '.gif']:
+#             response = "Gambar berhasil diunggah. Silakan jelaskan pertanyaan Anda tentang gambar ini."
+#         elif file_ext in ['.pdf', '.doc', '.docx', '.txt']:
+#             response = "Dokumen berhasil diunggah. Silakan ajukan pertanyaan tentang dokumen ini."
+#         else:
+#             response = "File berhasil diunggah. Silakan ajukan pertanyaan terkait file ini."
+
+#         return jsonify({
+#             "message": "File uploaded successfully",
+#             "file_path": unique_filename,
+#             "response": response
+#         })
+
+#     except Exception as e:
+#         logger.error(f"File upload error: {str(e)}")
+#         return jsonify({"error": "File upload failed"}), 500
+
+@app.route('/uploads/audio/<filename>')
+def serve_audio(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+def load_whisper_model():
+    try:
+        # Gunakan model 'base' untuk keseimbangan antara kecepatan dan akurasi
+        # Untuk produksi, pertimbangkan 'small' atau 'medium'
+        model = whisper.load_model("base")
+        
+        # Validasi model
+        test_result = model.transcribe("test_audio.wav", language="id", verbose=False)
+        if not test_result.get("text"):
+            raise RuntimeError("Model test failed")
+            
+        return model
+    except Exception as e:
+        logger.error(f"Failed to load Whisper model: {str(e)}")
+        return None
+# Dalam fungsi pembuatan app
+app.whisper_model = load_whisper_model()
 def map_weather_condition(weather_main):
     """Map OpenWeather conditions to our frontend conditions"""
     weather_main = weather_main.lower()
@@ -606,6 +633,4 @@ def get_mock_weather_data():
 if __name__ == '__main__':
     app.run()
     # app.run(host='0.0.0.0', port=8080, debug=True)
-    # http_server = WSGIServer(('0.0.0.0', 5000), app)
-    # http_server.serve_forever()
-
+    
