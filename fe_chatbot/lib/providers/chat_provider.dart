@@ -157,11 +157,14 @@ class ChatProvider with ChangeNotifier {
     return "Terjadi kesalahan tak terduga. Silakan coba lagi.";
   }
 
-  Future<void> _addBotMessage(String content, String sessionId) async {
+Future<void> _addBotMessage(String content, String sessionId) async {
+    final cleanContent = content.replaceAll('*', ''); // Bersihkan asterisk
     final botMessage = ChatMessage(
       content: content,
+      cleanContent: cleanContent, // Simpan versi bersih
       role: MessageRole.assistant,
     );
+    
     _messages.add(botMessage);
     
     try {
@@ -174,13 +177,14 @@ class ChatProvider with ChangeNotifier {
     notifyListeners();
     
     if (_useVoiceOutput) {
-      _speakText(content);
+      _speakText(botMessage.cleanContent); // Gunakan clean content untuk TTS
     }
   }
-
   Future<void> _speakText(String text) async {
     try {
-      await _ttsService.speak(text);
+      // Pastikan text sudah clean dari formatting
+      final cleanText = text.replaceAll('*', '');
+      await _ttsService.speak(cleanText);
     } catch (e) {
       print('Error speaking text: $e');
     }

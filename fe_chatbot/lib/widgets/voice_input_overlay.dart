@@ -147,4 +147,3 @@ class _PulsingMicState extends State<_PulsingMic> with SingleTickerProviderState
     );
   }
 }
-
