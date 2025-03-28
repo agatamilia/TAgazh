@@ -1,2 +1,0 @@
-C:/Users/User/AMILIA - Telkom University/TA GAZH/app/fe_chatbot/android/app/.cxx/Debug/4s5m426l/x86/CMakeFiles/edit_cache.dir
-C:/Users/User/AMILIA - Telkom University/TA GAZH/app/fe_chatbot/android/app/.cxx/Debug/4s5m426l/x86/CMakeFiles/rebuild_cache.dir

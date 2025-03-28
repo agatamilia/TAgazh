@@ -76,54 +76,92 @@ class ChatMessageItem extends StatelessWidget {
   }
   
   Widget _buildMessageContent(BuildContext context) {
-    final isUser = message.role == MessageRole.user;
-    
-    // Check if this is an image message
-    if (message.imageUrl != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Image preview
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.file(
-              File(message.imageUrl!),
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: 200,
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  width: double.infinity,
-                  height: 100,
-                  color: Colors.grey[300],
-                  child: const Center(
-                    child: Text('Tidak dapat menampilkan gambar'),
-                  ),
-                );
-              },
-            ),
+  final isUser = message.role == MessageRole.user;
+  
+  // Check if this is an image message
+  if (message.imageUrl != null) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Image preview
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.file(
+            File(message.imageUrl!),
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: 200,
+            errorBuilder: (context, error, stackTrace) {
+              return Container(
+                width: double.infinity,
+                height: 100,
+                color: Colors.grey[300],
+                child: const Center(
+                  child: Text('Tidak dapat menampilkan gambar'),
+                ),
+              );
+            },
           ),
-          const SizedBox(height: 8),
-          // Caption
+        ),
+        const SizedBox(height: 8),
+        // Caption - hanya parse bold untuk assistant
+        if (!isUser) 
+          RichText(
+            text: TextSpan(
+              style: const TextStyle(color: Colors.black),
+              children: _parseBoldText(message.content),
+            ),
+          )
+        else
           Text(
             message.content,
-            style: TextStyle(
-              color: isUser ? Colors.white : Colors.black,
-            ),
+            style: const TextStyle(color: Colors.white),
           ),
-        ],
-      );
-    }
-    
-    // Regular text message
-    return Text(
-      message.content,
-      style: TextStyle(
-        color: isUser ? Colors.white : Colors.black,
+      ],
+    );
+  }
+  
+  // Regular text message - hanya parse bold untuk assistant
+  if (!isUser) {
+    return RichText(
+      text: TextSpan(
+        style: const TextStyle(color: Colors.black),
+        children: _parseBoldText(message.content),
       ),
     );
   }
+  
+  // Pesan user tetap plain text
+  return Text(
+    message.content,
+    style: const TextStyle(color: Colors.white),
+  );
+}
 
+List<TextSpan> _parseBoldText(String text) {
+  final List<TextSpan> spans = [];
+  final parts = text.split('*');
+
+  for (int i = 0; i < parts.length; i++) {
+    if (i % 2 == 1) { // Bagian dengan *...* (indeks ganjil)
+      spans.add(
+        TextSpan(
+          text: parts[i],
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+      );
+    } else if (parts[i].isNotEmpty) { // Bagian normal
+      spans.add(TextSpan(text: parts[i]));
+    }
+  }
+
+  // Jika tidak ada tanda *, kembalikan teks biasa
+  if (spans.isEmpty) {
+    spans.add(TextSpan(text: text));
+  }
+
+  return spans;
+}
   Widget _buildTypingIndicator() {
     return Row(
       children: [
