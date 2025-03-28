@@ -4,7 +4,7 @@ import '../config/api_config.dart';
 class BackendChecker {
   static Future<bool> isBackendRunning() async {
     final Dio dio = Dio();
-    dio.options.connectTimeout = Duration(seconds: 5);
+    dio.options.connectTimeout = const Duration(seconds: 5);
     
     try {
       print('Checking if backend is running at ${ApiConfig.baseUrl}');

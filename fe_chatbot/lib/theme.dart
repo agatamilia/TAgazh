@@ -1,18 +1,16 @@
 import 'package:flutter/material.dart';
 
 // App color scheme
-final ColorScheme colorScheme = ColorScheme(
-  primary: const Color(0xFF2E7D32),         // Dark Green
-  primaryContainer: const Color(0xFFAED581), // Light Green
-  secondary: const Color(0xFFFFA000),        // Amber
-  secondaryContainer: const Color(0xFFFFE082), // Light Amber
-  surface: Colors.white,
-  background: const Color(0xFFF1F8E9),      // Off-White with Green Tint
-  error: const Color(0xFFB71C1C),
+const ColorScheme colorScheme = ColorScheme(
+  primary: Color(0xFF2E7D32),         // Dark Green
+  primaryContainer: Color(0xFFAED581), // Light Green
+  secondary: Color(0xFFFFA000),        // Amber
+  secondaryContainer: Color(0xFFFFE082), // Light Amber
+  surface: Colors.white,      // Off-White with Green Tint
+  error: Color(0xFFB71C1C),
   onPrimary: Colors.white,
   onSecondary: Colors.black,
-  onSurface: const Color(0xFF212121),        // Nearly Black
-  onBackground: const Color(0xFF212121),
+  onSurface: Color(0xFF212121),
   onError: Colors.white,
   brightness: Brightness.light,
 );
@@ -21,7 +19,7 @@ final ColorScheme colorScheme = ColorScheme(
 final ThemeData appTheme = ThemeData(
   colorScheme: colorScheme,
   useMaterial3: true,
-  scaffoldBackgroundColor: colorScheme.background,
+  scaffoldBackgroundColor: colorScheme.surface,
   appBarTheme: AppBarTheme(
     backgroundColor: colorScheme.primary,
     foregroundColor: colorScheme.onPrimary,

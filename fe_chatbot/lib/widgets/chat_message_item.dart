@@ -108,14 +108,14 @@ class ChatMessageItem extends StatelessWidget {
         if (!isUser) 
           RichText(
             text: TextSpan(
-              style: TextStyle(color: Colors.black),
+              style: const TextStyle(color: Colors.black),
               children: _parseBoldText(message.content),
             ),
           )
         else
           Text(
             message.content,
-            style: TextStyle(color: Colors.white),
+            style: const TextStyle(color: Colors.white),
           ),
       ],
     );
@@ -125,7 +125,7 @@ class ChatMessageItem extends StatelessWidget {
   if (!isUser) {
     return RichText(
       text: TextSpan(
-        style: TextStyle(color: Colors.black),
+        style: const TextStyle(color: Colors.black),
         children: _parseBoldText(message.content),
       ),
     );
@@ -134,7 +134,7 @@ class ChatMessageItem extends StatelessWidget {
   // Pesan user tetap plain text
   return Text(
     message.content,
-    style: TextStyle(color: Colors.white),
+    style: const TextStyle(color: Colors.white),
   );
 }
 
@@ -147,7 +147,7 @@ List<TextSpan> _parseBoldText(String text) {
       spans.add(
         TextSpan(
           text: parts[i],
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
       );
     } else if (parts[i].isNotEmpty) { // Bagian normal

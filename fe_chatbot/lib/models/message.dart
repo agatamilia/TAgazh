@@ -6,8 +6,10 @@ class ChatMessage {
   final MessageRole role;
   final String cleanContent;
   final DateTime timestamp;
-  final String? imageUrl; // For storing image paths
-  final bool isAudio; // New field for audio messages
+  final String? imageUrl;
+  final bool isAudio;
+  final String? audioPath;  
+  final bool isError; 
 
   ChatMessage({
     required this.content,
@@ -16,7 +18,9 @@ class ChatMessage {
     DateTime? timestamp,
     String? cleanContent,
     this.imageUrl,
-    this.isAudio = false, // Default to false for text messages
+    this.isAudio = false,
+    this.audioPath,         // Add to constructor
+    this.isError = false, // Default to false for text messages
   }) : 
     id = id ?? DateTime.now().millisecondsSinceEpoch.toString(),
     cleanContent = cleanContent ?? _removeFormatting(content),
@@ -55,6 +59,8 @@ class ChatMessage {
     DateTime? timestamp,
     String? imageUrl,
     bool? isAudio,
+    String? audioPath,      
+    bool? isError,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -63,6 +69,8 @@ class ChatMessage {
       timestamp: timestamp ?? this.timestamp,
       imageUrl: imageUrl ?? this.imageUrl,
       isAudio: isAudio ?? this.isAudio,
+      audioPath: audioPath ?? this.audioPath, 
+      isError: isError ?? this.isError,
     );
   }
 }

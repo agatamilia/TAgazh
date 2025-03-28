@@ -33,7 +33,7 @@ class VoiceInputOverlay extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               // Only animate the mic icon, not the entire container
-              _PulsingMic(),
+              const _PulsingMic(),
               const SizedBox(height: 24),
               const Text(
                 "Mendengarkan...",

@@ -1,5 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+from flask import Flask, json, request, jsonify, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 import os
 import requests
@@ -12,6 +11,7 @@ import whisper
 import logging
 from flask_ngrok import run_with_ngrok
 from flask_cors import CORS
+from flask_migrate import Migrate
 
 # Load environment variables
 load_dotenv()
@@ -28,7 +28,6 @@ CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'chatbot.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
-
 # API Keys
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -61,6 +60,8 @@ class Message(db.Model):
     image_path = db.Column(db.String(255))
     audio_path = db.Column(db.String(255))
 
+migrate = Migrate(app, db)
+
 # Whisper model initialization
 try:
     WHISPER_MODEL = whisper.load_model("base")
@@ -69,45 +70,15 @@ except Exception as e:
     logging.error(f"Failed to load Whisper model: {e}")
     WHISPER_MODEL = None
 
-# Create database tables
 with app.app_context():
+    db.drop_all()  # WARNING: Deletes all data!
     db.create_all()
 
-@app.route('/info', methods=['POST'])
-def handle_info():
-    try:
-        # Get form data
-        name = request.form.get('name')
-        date = request.form.get('date')
-        
-        # Handle single file
-        single_file = request.files.get('file')
-        if single_file:
-            single_filename = secure_filename(single_file.filename)
-            single_file.save(os.path.join(UPLOAD_FOLDER, single_filename))
-        
-        # Handle multiple files
-        multiple_files = request.files.getlist('files[]')
-        saved_files = []
-        
-        for file in multiple_files:
-            if file.filename == '':
-                continue
-            filename = secure_filename(file.filename)
-            file.save(os.path.join(UPLOAD_FOLDER, filename))
-            saved_files.append(filename)
-        
-        return jsonify({
-            'status': 'success',
-            'name': name,
-            'date': date,
-            'single_file': single_file.filename if single_file else None,
-            'multiple_files': saved_files
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in /info endpoint: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+if not os.access(UPLOAD_FOLDER, os.W_OK):
+    logger.error(f"Upload folder not writable: {UPLOAD_FOLDER}")
+
+
+
 
 @app.route('/api/transcribe', methods=['POST'])
 def transcribe_audio():
@@ -120,7 +91,7 @@ def transcribe_audio():
 
     try:
         # Save file
-        filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+        filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}.wav"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         audio_file.save(filepath)
 
@@ -142,7 +113,41 @@ def transcribe_audio():
 
         # Get AI response
         ai_response = get_deepseek_response(transcription)
-        
+            
+        session_id = request.form.get('session_id')
+        if session_id:
+            try:
+                current_time = int(datetime.now().timestamp() * 1000)
+                
+                # Save user audio message
+                user_message = Message(
+                    id=str(uuid.uuid4()),
+                    session_id=session_id,
+                    content=transcription,
+                    role='user',
+                    timestamp=current_time,
+                    audio_path=f"/uploads/audio/{filename}"
+                )
+                
+                # Save assistant response
+                assistant_message = Message(
+                    id=str(uuid.uuid4()),
+                    session_id=session_id,
+                    content=ai_response,
+                    role='assistant',
+                    timestamp=current_time + 1
+                )
+                
+                # Update session
+                session = db.session.get(Session, session_id)
+                if session:
+                    session.updated_at = current_time
+                    db.session.add_all([user_message, assistant_message])
+                    db.session.commit()
+            except Exception as e:
+                logger.error(f"Error saving transcribed messages: {e}")
+                db.session.rollback()
+
         return jsonify({
             "status": "success",
             "transcription": transcription,
@@ -154,28 +159,148 @@ def transcribe_audio():
         logging.error(f"Transcription error: {str(e)}")
         return jsonify({"error": "Audio processing failed"}), 500
 
-def validate_audio_file(filepath):
-    """Validate audio file format and duration"""
-    try:
-        # Check duration
-        duration = float(subprocess.check_output([
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            filepath
-        ]).decode('utf-8').strip())
-        
-        if duration < MIN_AUDIO_DURATION:
-            return {"error": f"Audio too short (min {MIN_AUDIO_DURATION}s)"}
-        if duration > MAX_AUDIO_DURATION:
-            return {"error": f"Audio too long (max {MAX_AUDIO_DURATION}s)"}
-            
-        return {"valid": True, "duration": duration}
-        
-    except Exception as e:
-        logging.error(f"Validation error: {str(e)}")
-        return {"error": "Invalid audio file"}
+# @app.route('/api/transcribe', methods=['POST'])
+# def transcribe_audio():
+#     if 'audio' not in request.files:
+#         return jsonify({"error": "No audio file provided"}), 400
 
+#     audio_file = request.files['audio']
+#     if audio_file.filename == '':
+#         return jsonify({"error": "Empty filename"}), 400
+
+#     try:
+#         # Create upload directory if needed
+#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        
+#         # Generate unique filename
+#         filename = secure_filename(f"audio_{datetime.now().timestamp()}.wav")
+#         filepath = os.path.join(UPLOAD_FOLDER, filename)
+        
+#         # Save file
+#         audio_file.save(filepath)
+        
+#         # Verify file was saved
+#         if not os.path.exists(filepath):
+#             return jsonify({"error": "Failed to save audio file"}), 500
+
+#         # Process with Whisper
+#         result = WHISPER_MODEL.transcribe(filepath, language="id")
+#         transcription = result.get("text", "").strip()
+        
+#         if not transcription:
+#             return jsonify({"error": "No speech detected"}), 400
+
+#         return jsonify({
+#             "status": "success",
+#             "transcription": transcription,
+#             "audio_url": f"/uploads/audio/{filename}"
+#         })
+
+#     except Exception as e:
+#         logging.error(f"Transcription error: {str(e)}")
+#         return jsonify({"error": "Audio processing failed"}), 500
+
+# @app.route('/api/sessions/<session_id>/messages', methods=['POST'])
+# def save_message(session_id):
+#     try:
+#         data = request.json
+#         if not data:
+#             return jsonify({"error": "No data provided"}), 400
+
+#         # Validate required fields
+#         required_fields = ['content', 'role']
+#         if not all(field in data for field in required_fields):
+#             return jsonify({"error": f"Missing required fields: {required_fields}"}), 400
+
+#         # Check if session exists
+#         session = db.session.get(Session, session_id)
+#         if not session:
+#             return jsonify({"error": "Session not found"}), 404
+
+#         # Create message with proper timestamp
+#         message = Message(
+#             id=str(uuid.uuid4()),
+#             session_id=session_id,
+#             content=data['content'],
+#             role=data['role'],
+#             timestamp=int(datetime.now().timestamp() * 1000),
+#             image_path=data.get('image_path'),
+#             audio_path=data.get('audio_path')
+#         )
+
+#         # Update session timestamp
+#         session.updated_at = int(datetime.now().timestamp() * 1000)
+
+#         # Add to database session
+#         db.session.add(message)
+        
+#         # Commit transaction
+#         db.session.commit()
+
+#         return jsonify({
+#             "id": message.id,
+#             "session_id": message.session_id,
+#             "content": message.content,
+#             "role": message.role,
+#             "timestamp": message.timestamp,
+#             "image_path": message.image_path,
+#             "audio_path": message.audio_path
+#         }), 201
+
+#     except Exception as e:
+#         db.session.rollback()
+#         logger.error(f"Error saving message: {str(e)}", exc_info=True)
+#         return jsonify({
+#             "error": "Failed to save message",
+#             "details": str(e)
+#         }), 500   
+
+    
+def validate_audio_file(filepath):
+    """Validasi format dan durasi audio"""
+    try:
+        # Cek apakah file ada
+        if not os.path.exists(filepath):
+            return {"error": "File not found"}
+            
+        # Cek ukuran file minimal (100 bytes)
+        if os.path.getsize(filepath) < 100:
+            return {"error": "File too small (corrupted?)"}
+        
+        # Validasi dengan ffprobe
+        result = subprocess.run([
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'stream=codec_type,sample_rate,channels',
+            '-of', 'json',
+            filepath
+        ], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return {"error": "Invalid audio file", "details": result.stderr}
+            
+        # Parse output ffprobe
+        probe_data = json.loads(result.stdout)
+        streams = probe_data.get('streams', [])
+        
+        if not any(s.get('codec_type') == 'audio' for s in streams):
+            return {"error": "No audio stream found"}
+            
+        # Cek sample rate dan channels
+        for stream in streams:
+            if stream.get('codec_type') == 'audio':
+                if int(stream.get('sample_rate', 0)) < 8000:
+                    return {"error": "Sample rate too low (min 8kHz)"}
+                if int(stream.get('channels', 0)) < 1:
+                    return {"error": "No audio channels"}
+                    
+        return {"valid": True}
+        
+        
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON response from ffprobe"}
+    except Exception as e:
+        return {"error": f"Validation error: {str(e)}"}
+    
 @app.route('/')
 def home():
     return jsonify({"status": "Flask is running!"})
@@ -234,7 +359,7 @@ def update_session(session_id):
         if not name:
             return jsonify({"error": "Name is required"}), 400
         
-        session = Session.query.get(session_id)
+        session = db.session.get(Session, session_id)
         if not session:
             return jsonify({"error": "Session not found"}), 404
         
@@ -253,7 +378,7 @@ def update_session(session_id):
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
     try:
-        session = Session.query.get(session_id)
+        session = db.session.get(Session, session_id)
         if not session:
             return jsonify({"error": "Session not found"}), 404
         
@@ -267,70 +392,91 @@ def delete_session(session_id):
         return jsonify({"error": "Failed to delete session"}), 500
 
 # Message management endpoints
+# @app.route('/api/sessions/<session_id>/messages', methods=['GET'])
+# def get_messages(session_id):
+#     try:
+#         messages = Message.query.filter_by(session_id=session_id).order_by(Message.timestamp.asc()).all()
+#         return jsonify([{
+#             "id": message.id,
+#             "session_id": message.session_id,
+#             "content": message.content,
+#             "role": message.role,
+#             "timestamp": message.timestamp,
+#             "image_path": message.image_path
+#         } for message in messages])
+#     except Exception as e:
+#         logger.error(f"Error getting messages: {e}")
+#         return jsonify({"error": "Failed to get messages"}), 500
+
 @app.route('/api/sessions/<session_id>/messages', methods=['GET'])
 def get_messages(session_id):
     try:
-        messages = Message.query.filter_by(session_id=session_id).order_by(Message.timestamp.asc()).all()
+        messages = Message.query.filter_by(session_id=session_id)\
+                              .order_by(Message.timestamp.asc())\
+                              .all()
+        
         return jsonify([{
-            "id": message.id,
-            "session_id": message.session_id,
-            "content": message.content,
-            "role": message.role,
-            "timestamp": message.timestamp,
-            "image_path": message.image_path
-        } for message in messages])
+            "id": msg.id,
+            "session_id": msg.session_id,
+            "content": msg.content,
+            "role": msg.role,
+            "timestamp": msg.timestamp,
+            "image_path": msg.image_path,
+            "audio_path": msg.audio_path  # This will now work after migration
+        } for msg in messages])
     except Exception as e:
         logger.error(f"Error getting messages: {e}")
         return jsonify({"error": "Failed to get messages"}), 500
-
+    
 @app.route('/api/sessions/<session_id>/messages', methods=['POST'])
 def save_message(session_id):
     try:
         data = request.json
-        content = data.get('content')
-        role = data.get('role')
-        image_path = data.get('image_path')
-        
-        if not content or not role:
-            return jsonify({"error": "Content and role are required"}), 400
-        
-        # Check if session exists
-        session = Session.query.get(session_id)
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Validate required fields
+        required_fields = ['content', 'role']
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": f"Missing required fields: {required_fields}"}), 400
+
+        # Get session
+        session = db.session.get(Session, session_id)
         if not session:
             return jsonify({"error": "Session not found"}), 404
-        
-        message_id = str(uuid.uuid4())
-        current_time = int(datetime.now().timestamp() * 1000)
-        
-        new_message = Message(
-            id=message_id,
-            session_id=session_id,
-            content=content,
-            role=role,
-            timestamp=current_time,
-            image_path=image_path,
-            audio_path=f"/uploads/audio/{filename}"
-        )
-        
-        # Update session's updated_at timestamp
-        session.updated_at = current_time
-        
-        db.session.add(new_message)
-        db.session.commit()
-        
-        return jsonify({
-            "id": message_id,
-            "session_id": session_id,
-            "content": content,
-            "role": role,
-            "timestamp": current_time,
-            "image_path": image_path
-        })
-    except Exception as e:
-        logger.error(f"Error saving message: {e}")
-        db.session.rollback()
-        return jsonify({"error": "Failed to save message"}), 500
 
+        # Create message
+        message = Message(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            content=data['content'],
+            role=data['role'],
+            timestamp=int(datetime.now().timestamp() * 1000),
+            image_path=data.get('image_path'),
+            audio_path=data.get('audio_path')
+        )
+
+        # Update session
+        session.updated_at = int(datetime.now().timestamp() * 1000)
+
+        db.session.add(message)
+        db.session.commit()
+
+        return jsonify({
+            "id": message.id,
+            "session_id": session_id,
+            "content": message.content,
+            "role": message.role,
+            "timestamp": message.timestamp,
+            "image_path": message.image_path,
+            "audio_path": message.audio_path
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error saving message: {str(e)}")
+        return jsonify({"error": "Failed to save message", "details": str(e)}), 500
+    
 @app.route('/api/sessions/<session_id>/messages/<message_id>', methods=['DELETE'])
 def delete_message(session_id, message_id):
     try:
@@ -450,7 +596,7 @@ def chat():
             
             if session_id:
                 try:
-                    session = Session.query.get(session_id)
+                    session = db.session.get(Session, session_id)
                     if not session:
                         return jsonify({"error": "Session not found"}), 404
                     
@@ -503,12 +649,6 @@ def serve_audio(filename):
 def load_whisper_model():
     try:
         model = whisper.load_model("base")
-        
-        # Validate model
-        test_result = model.transcribe("test_audio.wav", language="id", verbose=False)
-        if not test_result.get("text"):
-            raise RuntimeError("Model test failed")
-            
         return model
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {str(e)}")
