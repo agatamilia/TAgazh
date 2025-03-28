@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import whisper
 import logging
 from flask_ngrok import run_with_ngrok
+from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 run_with_ngrok(app)
+CORS(app)
 
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'chatbot.db')}"
