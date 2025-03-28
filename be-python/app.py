@@ -1,17 +1,15 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 import os
 import requests
-import json
-import tempfile
-from dotenv import load_dotenv
-import whisper
-import logging
-import sqlite3
 import uuid
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import subprocess
+from dotenv import load_dotenv
+import whisper
+import logging
 from flask_ngrok import run_with_ngrok
 
 # Load environment variables
@@ -24,16 +22,42 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 run_with_ngrok(app)
 
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'chatbot.db')}"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
 # API Keys
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Database setup
-DB_PATH = os.path.join(os.path.dirname(__file__), 'chatbot.db')
+# File upload configuration
 UPLOAD_FOLDER = 'uploads/audio'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 MAX_AUDIO_DURATION = 30  # seconds
 MIN_AUDIO_DURATION = 0.5  # seconds
+
+# Database Models
+class Session(db.Model):
+    __tablename__ = 'sessions'
+    
+    id = db.Column(db.String(36), primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.BigInteger, nullable=False)
+    updated_at = db.Column(db.BigInteger, nullable=False)
+    
+    messages = db.relationship('Message', backref='session', lazy=True, cascade='all, delete-orphan')
+
+class Message(db.Model):
+    __tablename__ = 'messages'
+    
+    id = db.Column(db.String(36), primary_key=True)
+    session_id = db.Column(db.String(36), db.ForeignKey('sessions.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    role = db.Column(db.String(20), nullable=False)
+    timestamp = db.Column(db.BigInteger, nullable=False)
+    image_path = db.Column(db.String(255))
+    audio_path = db.Column(db.String(255))
 
 # Whisper model initialization
 try:
@@ -43,50 +67,24 @@ except Exception as e:
     logging.error(f"Failed to load Whisper model: {e}")
     WHISPER_MODEL = None
 
-def init_db():
-    """Initialize the SQLite database"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-    )
-    ''')
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        content TEXT NOT NULL,
-        role TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        image_path TEXT,
-        FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
-    )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# Create database tables
+with app.app_context():
+    db.create_all()
 
-init_db()
 @app.route('/info', methods=['POST'])
 def handle_info():
     try:
-        # Ambil data form biasa
+        # Get form data
         name = request.form.get('name')
         date = request.form.get('date')
         
-        # Ambil file tunggal
+        # Handle single file
         single_file = request.files.get('file')
         if single_file:
             single_filename = secure_filename(single_file.filename)
             single_file.save(os.path.join(UPLOAD_FOLDER, single_filename))
         
-        # Ambil multiple files
+        # Handle multiple files
         multiple_files = request.files.getlist('files[]')
         saved_files = []
         
@@ -119,7 +117,7 @@ def transcribe_audio():
         return jsonify({"error": "Empty filename"}), 400
 
     try:
-        # Save file directly (no temp files)
+        # Save file
         filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         audio_file.save(filepath)
@@ -180,18 +178,17 @@ def validate_audio_file(filepath):
 def home():
     return jsonify({"status": "Flask is running!"})
 
+# Session management endpoints
 @app.route('/api/sessions', methods=['GET'])
 def get_sessions():
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM sessions ORDER BY updated_at DESC')
-        sessions = [dict(row) for row in cursor.fetchall()]
-        
-        conn.close()
-        return jsonify(sessions)
+        sessions = Session.query.order_by(Session.updated_at.desc()).all()
+        return jsonify([{
+            "id": session.id,
+            "name": session.name,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at
+        } for session in sessions])
     except Exception as e:
         logger.error(f"Error getting sessions: {e}")
         return jsonify({"error": "Failed to get sessions"}), 500
@@ -205,16 +202,15 @@ def create_session():
         session_id = str(uuid.uuid4())
         current_time = int(datetime.now().timestamp() * 1000)
         
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'INSERT INTO sessions (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
-            (session_id, name, current_time, current_time)
+        new_session = Session(
+            id=session_id,
+            name=name,
+            created_at=current_time,
+            updated_at=current_time
         )
         
-        conn.commit()
-        conn.close()
+        db.session.add(new_session)
+        db.session.commit()
         
         return jsonify({
             "id": session_id,
@@ -224,6 +220,7 @@ def create_session():
         })
     except Exception as e:
         logger.error(f"Error creating session: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to create session"}), 500
 
 @app.route('/api/sessions/<session_id>', methods=['PUT'])
@@ -235,65 +232,51 @@ def update_session(session_id):
         if not name:
             return jsonify({"error": "Name is required"}), 400
         
-        current_time = int(datetime.now().timestamp() * 1000)
-        
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?',
-            (name, current_time, session_id)
-        )
-        
-        if cursor.rowcount == 0:
-            conn.close()
+        session = Session.query.get(session_id)
+        if not session:
             return jsonify({"error": "Session not found"}), 404
         
-        conn.commit()
-        conn.close()
+        current_time = int(datetime.now().timestamp() * 1000)
+        session.name = name
+        session.updated_at = current_time
+        
+        db.session.commit()
         
         return jsonify({"message": "Session updated successfully"})
     except Exception as e:
         logger.error(f"Error updating session: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to update session"}), 500
 
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Delete all messages in the session
-        cursor.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
-        
-        # Delete the session
-        cursor.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
-        
-        if cursor.rowcount == 0:
-            conn.close()
+        session = Session.query.get(session_id)
+        if not session:
             return jsonify({"error": "Session not found"}), 404
         
-        conn.commit()
-        conn.close()
+        db.session.delete(session)
+        db.session.commit()
         
         return jsonify({"message": "Session deleted successfully"})
     except Exception as e:
         logger.error(f"Error deleting session: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to delete session"}), 500
 
 # Message management endpoints
 @app.route('/api/sessions/<session_id>/messages', methods=['GET'])
 def get_messages(session_id):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC', (session_id,))
-        messages = [dict(row) for row in cursor.fetchall()]
-        
-        conn.close()
-        return jsonify(messages)
+        messages = Message.query.filter_by(session_id=session_id).order_by(Message.timestamp.asc()).all()
+        return jsonify([{
+            "id": message.id,
+            "session_id": message.session_id,
+            "content": message.content,
+            "role": message.role,
+            "timestamp": message.timestamp,
+            "image_path": message.image_path
+        } for message in messages])
     except Exception as e:
         logger.error(f"Error getting messages: {e}")
         return jsonify({"error": "Failed to get messages"}), 500
@@ -309,32 +292,29 @@ def save_message(session_id):
         if not content or not role:
             return jsonify({"error": "Content and role are required"}), 400
         
+        # Check if session exists
+        session = Session.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
         message_id = str(uuid.uuid4())
         current_time = int(datetime.now().timestamp() * 1000)
         
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if session exists
-        cursor.execute('SELECT id FROM sessions WHERE id = ?', (session_id,))
-        if not cursor.fetchone():
-            conn.close()
-            return jsonify({"error": "Session not found"}), 404
-        
-        # Save the message
-        cursor.execute(
-            'INSERT INTO messages (id, session_id, content, role, timestamp, image_path) VALUES (?, ?, ?, ?, ?, ?)',
-            (message_id, session_id, content, role, current_time, image_path)
+        new_message = Message(
+            id=message_id,
+            session_id=session_id,
+            content=content,
+            role=role,
+            timestamp=current_time,
+            image_path=image_path,
+            audio_path=f"/uploads/audio/{filename}"
         )
         
         # Update session's updated_at timestamp
-        cursor.execute(
-            'UPDATE sessions SET updated_at = ? WHERE id = ?',
-            (current_time, session_id)
-        )
+        session.updated_at = current_time
         
-        conn.commit()
-        conn.close()
+        db.session.add(new_message)
+        db.session.commit()
         
         return jsonify({
             "id": message_id,
@@ -346,42 +326,35 @@ def save_message(session_id):
         })
     except Exception as e:
         logger.error(f"Error saving message: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to save message"}), 500
 
 @app.route('/api/sessions/<session_id>/messages/<message_id>', methods=['DELETE'])
 def delete_message(session_id, message_id):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('DELETE FROM messages WHERE id = ? AND session_id = ?', (message_id, session_id))
-        
-        if cursor.rowcount == 0:
-            conn.close()
+        message = Message.query.filter_by(id=message_id, session_id=session_id).first()
+        if not message:
             return jsonify({"error": "Message not found"}), 404
         
-        conn.commit()
-        conn.close()
+        db.session.delete(message)
+        db.session.commit()
         
         return jsonify({"message": "Message deleted successfully"})
     except Exception as e:
         logger.error(f"Error deleting message: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to delete message"}), 500
 
 @app.route('/api/sessions/<session_id>/messages', methods=['DELETE'])
 def clear_messages(session_id):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
-        
-        conn.commit()
-        conn.close()
+        Message.query.filter_by(session_id=session_id).delete()
+        db.session.commit()
         
         return jsonify({"message": "All messages cleared successfully"})
     except Exception as e:
         logger.error(f"Error clearing messages: {e}")
+        db.session.rollback()
         return jsonify({"error": "Failed to clear messages"}), 500
 
 @app.route('/api/weather', methods=['GET'])
@@ -475,36 +448,38 @@ def chat():
             
             if session_id:
                 try:
-                    conn = sqlite3.connect(DB_PATH)
-                    cursor = conn.cursor()
+                    session = Session.query.get(session_id)
+                    if not session:
+                        return jsonify({"error": "Session not found"}), 404
                     
-                    # Save user message
-                    user_message_id = str(uuid.uuid4())
                     current_time = int(datetime.now().timestamp() * 1000)
                     
-                    cursor.execute(
-                        'INSERT INTO messages (id, session_id, content, role, timestamp) VALUES (?, ?, ?, ?, ?)',
-                        (user_message_id, session_id, message, 'user', current_time)
+                    # Save user message
+                    user_message = Message(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        content=message,
+                        role='user',
+                        timestamp=current_time
                     )
                     
                     # Save assistant message
-                    assistant_message_id = str(uuid.uuid4())
-                    current_time = int(datetime.now().timestamp() * 1000)
-                    
-                    cursor.execute(
-                        'INSERT INTO messages (id, session_id, content, role, timestamp) VALUES (?, ?, ?, ?, ?)',
-                        (assistant_message_id, session_id, formatted_message, 'assistant', current_time)
+                    assistant_message = Message(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        content=formatted_message,
+                        role='assistant',
+                        timestamp=current_time + 1  # Ensure ordering
                     )
                     
-                    cursor.execute(
-                        'UPDATE sessions SET updated_at = ? WHERE id = ?',
-                        (current_time, session_id)
-                    )
+                    # Update session timestamp
+                    session.updated_at = current_time
                     
-                    conn.commit()
-                    conn.close()
+                    db.session.add_all([user_message, assistant_message])
+                    db.session.commit()
                 except Exception as e:
                     logger.error(f"Error saving messages to database: {e}")
+                    db.session.rollback()
             
             return jsonify({
                 "response": formatted_message,
@@ -519,62 +494,15 @@ def chat():
         logger.error(f"Chat API error: {e}")
         return jsonify({"error": "An error occurred while processing your message"}), 500
 
-# @app.route('/api/debug/audio', methods=['POST'])
-# def debug_audio():
-#     audio_file = request.files['audio']
-#     temp_path = "/tmp/debug_audio.wav"
-#     audio_file.save(temp_path)
-    
-#     return jsonify({
-#         "file_size": os.path.getsize(temp_path),
-#         "first_bytes": str(open(temp_path, 'rb').read(100))  # 100 byte pertama
-#     })
-
-# @app.route('/api/upload', methods=['POST'])
-# def upload_file():
-#     if 'file' not in request.files:
-#         return jsonify({"error": "No file provided"}), 400
-
-#     uploaded_file = request.files['file']
-#     if uploaded_file.filename == '':
-#         return jsonify({"error": "No file selected"}), 400
-
-#     try:
-#         # Generate unique filename
-#         file_ext = os.path.splitext(uploaded_file.filename)[1].lower()
-#         unique_filename = f"{uuid.uuid4()}{file_ext}"
-#         file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-#         uploaded_file.save(file_path)
-
-#         # Generate appropriate response based on file type
-#         if file_ext in ['.jpg', '.jpeg', '.png', '.gif']:
-#             response = "Gambar berhasil diunggah. Silakan jelaskan pertanyaan Anda tentang gambar ini."
-#         elif file_ext in ['.pdf', '.doc', '.docx', '.txt']:
-#             response = "Dokumen berhasil diunggah. Silakan ajukan pertanyaan tentang dokumen ini."
-#         else:
-#             response = "File berhasil diunggah. Silakan ajukan pertanyaan terkait file ini."
-
-#         return jsonify({
-#             "message": "File uploaded successfully",
-#             "file_path": unique_filename,
-#             "response": response
-#         })
-
-#     except Exception as e:
-#         logger.error(f"File upload error: {str(e)}")
-#         return jsonify({"error": "File upload failed"}), 500
-
 @app.route('/uploads/audio/<filename>')
 def serve_audio(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 def load_whisper_model():
     try:
-        # Gunakan model 'base' untuk keseimbangan antara kecepatan dan akurasi
-        # Untuk produksi, pertimbangkan 'small' atau 'medium'
         model = whisper.load_model("base")
         
-        # Validasi model
+        # Validate model
         test_result = model.transcribe("test_audio.wav", language="id", verbose=False)
         if not test_result.get("text"):
             raise RuntimeError("Model test failed")
@@ -583,8 +511,9 @@ def load_whisper_model():
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {str(e)}")
         return None
-# Dalam fungsi pembuatan app
+
 app.whisper_model = load_whisper_model()
+
 def map_weather_condition(weather_main):
     """Map OpenWeather conditions to our frontend conditions"""
     weather_main = weather_main.lower()
@@ -597,16 +526,18 @@ def map_weather_condition(weather_main):
         return 'rainy'
     else:
         return 'cloudy'  # Default
+
 def get_openweather_data(lat, lon):
     """Fetch weather data from OpenWeather API"""
     try:
         url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric&lang=id"
         response = requests.get(url)
-        response.raise_for_status()  # Raises an HTTPError for bad responses
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"OpenWeather API error: {e}")
         return None
+
 def get_farming_advice(weather_main):
     """Get farming advice based on weather condition"""
     weather_main = weather_main.lower()
@@ -621,6 +552,7 @@ def get_farming_advice(weather_main):
         return "Pastikan drainase lahan baik untuk mencegah genangan"
     else:
         return "Pantau kondisi tanaman secara berkala"
+
 def get_mock_weather_data():
     """Return mock weather data for testing"""
     return {
@@ -630,7 +562,41 @@ def get_mock_weather_data():
         'location': 'Jakarta',
         'advice': 'Cocok untuk panen atau pengeringan hasil panen'
     }
+
+def get_deepseek_response(prompt):
+    """Get response from DeepSeek API"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "Anda adalah asisten pertanian PeTaniku."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        
+        response = requests.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            logger.error(f"DeepSeek API error: {response.text}")
+            return "Maaf, saya tidak bisa memberikan jawaban saat ini."
+            
+    except Exception as e:
+        logger.error(f"Error getting DeepSeek response: {e}")
+        return "Maaf, terjadi kesalahan dalam memproses permintaan Anda."
+
 if __name__ == '__main__':
     app.run()
-    # app.run(host='0.0.0.0', port=8080, debug=True)
-    
